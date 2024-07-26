@@ -9,6 +9,13 @@ import datetime
 import json
 import hashlib
 import pandas as pd
+import io
+import copy
+import numpy
+from qreader import QReader
+from PIL import Image
+
+qreader = QReader(model_size="n")
 
 def extract_text_from_pdf(pdf_file):
     text = ""
@@ -17,15 +24,31 @@ def extract_text_from_pdf(pdf_file):
         page = pdf_document.load_page(page_num)
         text += page.get_text()
 
-        # image_list = page.get_images(full=True)
-        # for img_index, img in enumerate(image_list):
-        #     xref = img[0]
-        #     base_image = pdf_document.extract_image(xref)
-        #     image_bytes = base_image["image"]
+    # image_list = pdf_document.get_page_images(0)
+    # for img_index, img in enumerate(image_list):
+    #     # (10, 0, 200, 200, 8, 'DeviceRGB', '', 'Xi46', 'FlateDecode')
+    #     # xref (int),smask (int), width and height (ints), bpc (int),colorspace (str), alt. colorspace (str), name (str),filter (str),referencer (int) the xref of the referencer. Zero if directly referenced by the page. Only present if full=True.
+    #     xref, smask, width, height, bpc, colorspace, altcolorspace, name, adobefilter = img
+    #     if width!=height or width<50:
+    #         continue
 
-        #     image_name = f"page{page_num}_image{img_index}.png"
-        #     with open(image_name, "wb") as image_file:
-        #         image_file.write(image_bytes)
+    #     base_image  = pdf_document.extract_image(xref)
+    #     image_bytes = base_image["image"]
+
+
+    #     print(img)
+    #     try:
+    #         image = Image.open(io.BytesIO(image_bytes))
+    #         image.show()
+    #     except:
+    #         image_name = "%s-img.png"%(pdf_file)
+    #         with open(image_name, "wb") as image_file:
+    #             image_file.write(image_bytes)
+    #         input("saved")
+
+    #     decoded_text = qreader.detect_and_decode(image=numpy.array(image))
+    #     input(decoded_text)
+
     return text
 
 def rm_dup(findall):
@@ -48,10 +71,12 @@ testchinese = {
     '壹仟伍佰肆拾壹圆肆角壹':1541.41,
     '贰拾陆圆贰角陆':26.26,
     '叁拾玖圆壹角伍':39.15,
-    '壹仟贰佰叁拾玖圆零捌分':1239.08
+    '壹仟贰佰叁拾玖圆零捌分':1239.08,
+    '叁拾圆整':30.00,
+    '伍拾陆元整':56.00
     }
 
-muldict = {'拾':10,'佰':100,'仟':1000,'万':10000,'圆':1,'角':0.1,'分':0.01}
+muldict = {'拾':10,'佰':100,'仟':1000,'万':10000,'圆':1,'元':1,'角':0.1,'分':0.01}
 numdict = {'壹':1,'贰':2,'叁':3,'肆':4,'伍':5,'陆':6,'柒':7,'捌':8,'玖':9}
 
 def chinese2num(chinese):
@@ -65,15 +90,36 @@ def chinese2num(chinese):
             mul = muldict[i]
         else:
             num+= numdict[i]*mul
+    # lastnum = 0
+    # for i in chinese:
+    #     if i in '整零':
+    #         continue
+    #     if i in muldict:
+    #         num += muldict[i]*lastnum
+    #         lastnum = 0
+    #     else:
+    #         lastnum = numdict[i]
+    # else:
+    #     num += lastnum*0.01
+
     return round(num*10000)/10000
 
+# 主要匹配以下情况:
+# 最正常的: xx地xx有限公司
+# 离谱: xx地xx有限公司xx店
+# 还有: xx地xx(北京)有限公司
 pcompany  = re.compile("([\u4e00-\u9fa5（）]+有限公司|[\u4e00-\u9fa5（）]+有限公司[\u4e00-\u9fa5]+店)\n")
-pdate     = re.compile("(20[0-9]{2})\\s?年\\s?([0-9]{2})\\s?月\\s?([0-9]{2})\\s?日")
-pdate2    = re.compile("(202[0-9])  ([0-9]{2})  ([0-9]{2})")
-pprice    = re.compile("[¥￥]\\s*([0-9\\.]+)")
-ppricecap = re.compile("[壹贰叁肆伍陆柒捌玖拾佰仟万圆角分整零]+")
+
+pdate     = re.compile("(202[0-9])\\s{0,2}年\\s{0,2}([0-9]{2})\\s{0,2}月\\s?([0-9]{2})\\s{0,2}日")
+# 有的发票是 "年 月 日" 是一个文字, 然后 "2024  01  01" 再塞到刚刚 "年 月 日" 的地方
+pdate2    = re.compile("(202[0-9])\\s{1,2}([0-9]{2})\\s{1,2}([0-9]{2})")
+
+pprice    = re.compile("[¥￥]\\s{0,2}([0-9]+\\.[0-9]{2})")
+ppricecap = re.compile("[壹贰叁肆伍陆柒捌玖拾佰仟万圆元角分整零]+")
+
 # 发票类别
 pcategory = re.compile("\\*([\u4e00-\u9fa5]+)\\*") # 这串re是中文的意思
+
 # 专票还是普票：电子发票(增值税专用发票) or 北京增值税电子普通发票
 pzhuanpiao = re.compile("(专用发票|普通发票)")
 
@@ -278,21 +324,36 @@ def deal_folder(folder_name=None):
     tot = sum(i["pricecapnum"] for i in invoices)
     print("总计 %.4f 元"%(tot))
 
+    excel = []
+    for i in invoices:
+        e = copy.deepcopy(i)
+        e['companies'] = ', '.join(e['companies'])
+        e['date'] = ''.join(["%02d"%(j) if j<99 else str(j) for j in e['date']])
+        e['价税合计'] = e['prices'][0]
+        e['金额'] = e['prices'][1]
+        e['税额'] = e['prices'][2]
+        e['项目名称'] = ', '.join(e['category'])
+        for j in ['pricecap','pricecapnum','zengzhi','prices','category']:
+            e.pop(j)
+        excel.append(e)
+
     filename = "发票-%.2f.xlsx"%(tot,)
-    df = pd.DataFrame(invoices)
+    df = pd.DataFrame(excel)
+    writer = pd.ExcelWriter(filename,engine='xlsxwriter')
+    df.to_excel(writer, sheet_name='sheet1', index = False)
+    for column in df:
+        column_len = max(2*df[column].astype(str).map(len).max(), len(column))
+        col_idx = df.columns.get_loc(column)
+        writer.sheets['sheet1'].set_column(col_idx, col_idx, column_len)
+    writer.close()
 
-    # 分列处理复杂字段
-    df['companies'] = df['companies'].apply(lambda x: ', '.join(x))
-    df['date'] = df['date'].apply(lambda x: '-'.join(map(str, x)))
-    df['prices'] = df['prices'].apply(lambda x: ', '.join(map(str, x)))
-    df['category'] = df['category'].apply(lambda x: ', '.join(x))
-
-    df.to_excel(filename)
     print("发票信息已保存到 %s"%(filename))
 
 if __name__=="__main__":
+    # # test chinese
     # for i,j in testchinese.items():
     #     assert j==chinese2num(i), "%s -> %s"%(i,chinese2num(i))
+    # input()
 
     # print(extract_text_from_pdf("202404-4659.87/餐饮服务-26.8-北京肯德基有限公司-1d.pdf"))
     # input()
