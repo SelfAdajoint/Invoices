@@ -12,10 +12,9 @@ import pandas as pd
 import io
 import copy
 import numpy
-from qreader import QReader
 from PIL import Image
 
-qreader = QReader(model_size="n")
+qreader = None
 
 def extract_text_from_pdf(pdf_file):
     text = ""
@@ -23,6 +22,12 @@ def extract_text_from_pdf(pdf_file):
     for page_num in range(len(pdf_document)):
         page = pdf_document.load_page(page_num)
         text += page.get_text()
+
+    # global qreader
+    # if qreader is None:
+    #     from qreader import QReader
+    #     qreader = QReader(model_size="n")
+    #     print("inited qreader")
 
     # image_list = pdf_document.get_page_images(0)
     # for img_index, img in enumerate(image_list):
@@ -125,7 +130,7 @@ pzhuanpiao = re.compile("(专用发票|普通发票)")
 
 # 获取上个月的月份
 current_date = datetime.datetime.now()
-this_moonth = current_date.month
+this_month = current_date.month
 last_month_date = current_date - datetime.timedelta(days=current_date.day)
 last_month = last_month_date.month
 
@@ -170,7 +175,7 @@ def extract_invoice_info(pdf_file,check_month=True):
 
     return info
 
-def check_invoice_info(info,check_month=False):
+def check_invoice_info(info,check_month=False,check_this_month=False):
     errs = []
     msgs = []
     if len(info["companies"])!=2:
@@ -188,9 +193,13 @@ def check_invoice_info(info,check_month=False):
             errs.append("date")
             msgs.append("发票日期错误: %s"%(info["date"],))
 
-        if check_month and info["date"][1]!=last_month:
-            errs.append("date")
-            msgs.append("fatal: 发票不是上个月的：%s"%(info["date"],))
+        if check_month:
+            if not check_this_month and info["date"][1]!=last_month:
+                errs.append("date")
+                msgs.append("fatal: 发票不是上个月的：%s"%(info["date"],))
+            elif check_this_month and info["date"][1]!=this_month:
+                errs.append("date")
+                msgs.append("fatal: 发票不是这个月的：%s"%(info["date"],))
 
     if len(info['prices'])!=3:
         errs.append("prices")
@@ -288,16 +297,18 @@ def deal_folder(folder_name=None):
     else:
         check_month = False
 
+    check_this_month = "this-month" in " ".join(sys.argv)
+
     pdf_files = get_pdf_files(folder_name)
 
     invoices = []
     for pdf_file in pdf_files:
         print("dealing %s"%(pdf_file))
         info = extract_invoice_info(pdf_file)
-        errs,msgs = check_invoice_info(info,check_month=check_month)
+        errs,msgs = check_invoice_info(info,check_month=check_month,check_this_month=check_this_month)
         while len(errs)>0:
             info = correct_invoice_info(info,errs,msgs)
-            errs,msgs = check_invoice_info(info,check_month=check_month)
+            errs,msgs = check_invoice_info(info,check_month=check_month,check_this_month=check_this_month)
             input("继续?")
 
         std_name = get_std_name(info)
@@ -358,12 +369,14 @@ if __name__=="__main__":
     # print(extract_text_from_pdf("202404-4659.87/餐饮服务-26.8-北京肯德基有限公司-1d.pdf"))
     # input()
 
-    if len(sys.argv)==2:
+    if len(sys.argv)>=2:
         if "help" in sys.argv[1]:
-            print("usage:\n./pdf_parse.py\n./pdf_parse.py folder")
+            print("usage:\n./pdf_parser.py\n./pdf_parser.py folder\n./pdf_parser.py --this-month")
             sys.exit()
-        else:
+        elif not sys.argv[1].startswith("-"):
             deal_folder(sys.argv[1])
+        else:
+            deal_folder()
     else:
         deal_folder()
 
